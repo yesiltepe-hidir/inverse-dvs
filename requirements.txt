@@ -1,0 +1,23 @@
+--extra-index-url https://download.pytorch.org/whl/cu118
+rp
+torch==2.6.0
+torchvision==0.21.0
+diffusers==0.32.2
+einops==0.8.1
+easydict
+transformers==4.48.3
+accelerate==1.5.2
+oldest-supported-numpy
+sentencepiece==0.2.0
+peft==0.15.0
+opencv-contrib-python
+imageio-ffmpeg
+fire
+moviepy
+icecream
+matplotlib
+decord==0.6.0
+pytorchvideo
+triton==3.2.0
+scipy
+scikit-image

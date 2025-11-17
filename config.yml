@@ -1,0 +1,51 @@
+# Configuration file
+# -------------------------------------------------- Preprocessing settings -------------------------------------------------- #
+# GPU settings - shared across all scripts
+gpu:
+  device_ids: [0, 1, 2, 3, 4, 5, 6, 7]  # List of GPU IDs to use for all processes
+
+# Common directories
+common:
+  experiment_dir: "results"            # Base directory for experiment outputs
+  prompts_dir: "prompts"               # Directory containing prompt files
+
+# Dataset settings
+dataset:
+  root_dir: "data/"                    # Root directory containing videos
+  video_pattern: "*.mp4"               # Pattern to match video files
+  specific_videos: ['vlogger_corgi']
+
+# Experiment settings
+experiment:
+  trajectories: ["loop1"]                # all trajectories are defined in the "trajectories" directory
+
+# Depth extraction settings
+depth:
+  output_dir: "depths"                 # Output directory for depth data
+  encoder: "vitl"                      # Encoder model to use (vitl, vitb, etc.)
+  save_npz: true                       # Whether to save depth as npz
+  force_extract: false                 # Force extraction even if depth already exists
+  video_depth_anything_dir: "Video-Depth-Anything"  # Directory containing depth estimation code
+# ------------------------------------------------ Camera transformation settings ------------------------------------------------ #
+# Camera transformation settings
+camera:
+  video_length: 49                      # Video length parameter for warper_utils.py
+  traj_dir: "trajectories"              # Directory containing trajectory files
+  traj_file_template: "{subfolder}.txt" # Template for trajectory file
+  depth_path_template: "depths/{video_name}/{video_name}_depths.npz"  # Template for depth path
+
+# -------------------------------------------------- Camera inference settings --------------------------------------------------- #
+# Inference settings
+inference:
+  model_path: "THUDM/CogVideoX-5b-I2V"         # Model path
+  lora_path: "I2V5B_final_i38800_nearest_lora_weights.safetensors"  # LoRA weights path
+  inversion_dir: "inversions"                  # Directory containing inverted latents
+  num_inference_steps: [30]                    # List of inference steps
+  guidance_scale: [10, 12]                     # List of guidance scales
+  preservation_scale: [1.0]                    # List of preservation scales
+  k_order: [5, 10, 20]                         # List of k orders
+  treshold_index: [-1]                         # List of threshold indices
+  seed: 42                                     # Seed for the random number generator
+  inverted_latent_template: "{inversion_dir}/{subfolder}_latents_{video_name}_{num_inference_steps}.pt"  # Template for inverted latent path
+  mask_path_template: "{experiment_dir}/{subfolder}/{video_name}/mask.pt"                                # Template for mask path
+  depth_path_template: "depths/{video_name}/{video_name}_depths.npz"                                     # Template for depth path

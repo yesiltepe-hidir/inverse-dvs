@@ -1,0 +1,62 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Image files
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.webp
+
+# Video files
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.flv
+*.mkv
+*.webm
+# Exception: allow mp4 files in data folder
+!data/*.mp4
+
+# PyTorch model files
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+.env/
+.venv/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Local development settings
+.env
+.env.local
+*.log 
+
+# Data directories
+results
+prompts
+depths
+inversions

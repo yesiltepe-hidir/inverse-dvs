@@ -1,0 +1,3 @@
+[submodule "DepthCrafter"]
+	path = DepthCrafter
+	url = https://github.com/Tencent/DepthCrafter.git
