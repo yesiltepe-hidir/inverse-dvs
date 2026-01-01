@@ -1,22 +1,36 @@
-# Dynamic View Synthesis as an Inverse Problem [NeurIPS 2025]
-
-[![Project Website](https://img.shields.io/badge/Project-Website-blue)](https://inverse-dvs.github.io/) [![arXiv](https://img.shields.io/badge/arXiv-2506.08004-b31b1b.svg)](https://arxiv.org/pdf/2506.08004)
-
 <p align="center">
-
->[Hidir Yesiltepe](https://yesiltepe-hidir.github.io/), [Pinar Yanardag](https://pinguar.org/)
-
+  <h1 align="center">🎞️ Dynamic View Synthesis as an Inverse Problem</h1>
+  <h3 align="center">NeurIPS 2025</h3>
 </p>
 
 <p align="center">
-
+  <p align="center">
+    <a href="https://yesiltepe-hidir.github.io/">Hidir Yesiltepe</a>
+    ·
+    <a href="https://pinguar.org/">Pinar Yanardag</a>
+    <br>
+    Virginia Tech
+  </p>
+  <p align="center">
+    <a href="https://inverse-dvs.github.io/">
+      <img src="https://img.shields.io/badge/Project-Website-blue" alt="Project Website">
+    </a>
+    <a href="https://arxiv.org/pdf/2506.08004">
+      <img src="https://img.shields.io/badge/arXiv-2506.08004-b31b1b.svg" alt="arXiv">
+    </a>
+    <img src="https://komarev.com/ghpvc/?username=yesiltepe-hidir-dvs&label=Views&color=green&style=flat" alt="Views">
+  </p>
 </p>
+
+---
+
+✨ From real-world complex scenes to AI-generated videos, our method preserves identity fidelity and synthesizes plausible novel views by operating entirely in noise initialization phase.
+
+---
 
 <p align="center">
-  <img src="assets/inverse_dvs.gif">
+  <video src="https://github.com/user-attachments/assets/8f47d67a-93ed-4ab8-b2a3-79f3dc7862d9" width="100%" controls autoplay loop muted></video>
 </p>
-
-   From real-world complex scenes to AI-generated videos, our method preserves identity fidelity and synthesizes plausible novel views by operating entirely in noise initialization phase.
 
 </p>
 
