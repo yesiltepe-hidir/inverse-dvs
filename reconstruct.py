@@ -5,13 +5,14 @@ from typing import Any, Dict, List, Optional, TypedDict, Union
 
 import torch
 import random
-import numpy as np
+import torch.nn.functional as F
 import torchvision.transforms as T
 from diffusers.models.autoencoders import AutoencoderKLCogVideoX
 from diffusers.pipelines.cogvideo.pipeline_cogvideox import retrieve_timesteps
-from diffusers.pipelines.cogvideo.pipeline_cogvideox_image2video import CogVideoXImageToVideoPipeline
-from diffusers.schedulers import CogVideoXDDIMScheduler, DDIMInverseScheduler
+from pipelines.pipeline_cogvideox_image2video_reconstruction import CogVideoXImageToVideoPipeline
+from diffusers.schedulers import DDIMInverseScheduler
 from diffusers.utils import export_to_video
+from models.transformers.cogvideox_transformer_3d import CogVideoXTransformer3DModel
 
 # Must import after torch because this can sometimes lead to a nasty segmentation fault, or stack smashing error.
 # Very few bug reports but it happens. Look in decord Github issues for more relevant information.
@@ -19,6 +20,12 @@ import decord  # isort: skip
 
 from diffusers.utils import load_video
 from huggingface_hub import hf_hub_download
+import numpy as np
+import rp
+from scipy.ndimage import zoom
+from schedulers.scheduling_ddim_cogvideox import CogVideoXDDIMScheduler
+from utils.grid import create_video_grid
+from utils.downsize_mask import downsize_mask
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -43,55 +50,72 @@ class DDIMInversionArguments(TypedDict):
     dtype: torch.dtype
     seed: int
     device: torch.device
+    treshold_idx: int
 
 
 def get_args() -> DDIMInversionArguments:
     parser = argparse.ArgumentParser()
+
     parser.add_argument(
-        "--subfolder", type=str, required=True, help="Subfolder of the video"
+        "--model_path", type=str, required=True, help="Path of the pretrained model"
+    )
+
+    parser.add_argument(
+        "--k_order", type=int, required=False, help="Order of the k-diffusion"
+    )
+
+    parser.add_argument(
+        "--lora_path", type=str, required=False, help="Path of the lora weights"
     )
     parser.add_argument(
-        "--model_path", type=str, required=False, default="THUDM/CogVideoX-5b-I2V", help="Path of the pretrained model"
+        "--inverted_latent_path", type=str, required=False, help="Path of the inverted latents"
+    )
+    
+    parser.add_argument(
+        "--mask_path", type=str, required=False, help="Path of the mask"
     )
     parser.add_argument(
-        "--lora_path", type=str, required=False, default="I2V5B_final_i38800_nearest_lora_weights.safetensors", help="Path of the lora weights"
+        "--depth_path", type=str, required=False, help="Path of the depth"
+    )
+
+    parser.add_argument(
+        "--treshold_idx", type=int, required=False, default=-5, help="Index to use for the threshold"
+    )
+
+    parser.add_argument(
+        "--prompt", type=str, required=True, help="Prompt for the direct sample procedure"
     )
     parser.add_argument(
-        "--prompt", type=str, required=False, default="", help="Prompt for the direct sample procedure"
+        "--video_path", type=str, required=True, help="Path of the video for inversion"
     )
     parser.add_argument(
-        "--video_path", type=str, required=False, default="davis_data/data_copy/03_reading_cat.mp4", help="Path of the video for inversion"
-    )
-    parser.add_argument(
-        "--output_path", type=str, default="inversions", help="Path of the output videos"
+        "--output_path", type=str, default="output", help="Path of the output videos"
     )
     parser.add_argument(
         "--guidance_scale", type=float, default=6.0, help="Classifier-free guidance scale"
     )
     parser.add_argument(
-        "--num_inference_steps", type=int, default=30, help="Number of inference steps"
+        "--preservation_scale", type=float, default=3.0, help="Preservation scale"
     )
     parser.add_argument(
-        "--skip_frames_start", type=int, default=0, help="Number of skipped frames from the start"
+        "--num_inference_steps", type=int, default=50, help="Number of inference steps"
     )
     parser.add_argument(
-        "--skip_frames_end", type=int, default=0, help="Number of skipped frames from the end"
+        "--width", type=int, default=720, help="Resized width of the video frames"
     )
-    parser.add_argument(
-        "--frame_sample_step", type=int, default=None, help="Temporal stride of the sampled frames"
-    )
-    parser.add_argument(
-        "--max_num_frames", type=int, default=81, help="Max number of sampled frames"
-    )
-    parser.add_argument("--width", type=int, default=720, help="Resized width of the video frames")
     parser.add_argument(
         "--height", type=int, default=480, help="Resized height of the video frames"
     )
-    parser.add_argument("--fps", type=int, default=30, help="Frame rate of the output videos")
+    parser.add_argument(
+        "--fps", type=int, default=30, help="Frame rate of the output videos"
+    )
     parser.add_argument(
         "--dtype", type=str, default="bf16", choices=["bf16", "fp16"], help="Dtype of the model"
     )
-    parser.add_argument("--seed", type=int, default=42, help="Seed for the random number generator")
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Seed for the random number generator"
+    )
+
     parser.add_argument(
         "--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device for inference"
     )
@@ -102,6 +126,7 @@ def get_args() -> DDIMInversionArguments:
 
     return DDIMInversionArguments(**vars(args))
 
+            
 
 def get_video_frames(
     video_path: str,
@@ -144,15 +169,13 @@ def get_video_frames(
 
 
 def encode_video_frames(
-    vae: AutoencoderKLCogVideoX, video_frames: torch.FloatTensor, generator: Optional[torch.Generator] = None
+    vae: AutoencoderKLCogVideoX, video_frames: torch.FloatTensor
 ) -> torch.FloatTensor:
     video_frames = video_frames.to(device=vae.device, dtype=vae.dtype)
     video_frames = video_frames.unsqueeze(0).permute(0, 2, 1, 3, 4)  # [B, C, F, H, W]
-    # latent_dist = vae.encode(x=video_frames).latent_dist.sample().transpose(1, 2)
-    latent_dist = vae.encode(x=video_frames).latent_dist.mode().transpose(1, 2)
+    latent_dist = vae.encode(x=video_frames).latent_dist.sample().transpose(1, 2)
     latent_dist = latent_dist * vae.config.scaling_factor
     return latent_dist
-
 
 def export_latents_to_video(
     pipeline: CogVideoXImageToVideoPipeline, latents: torch.FloatTensor, video_path: str, fps: int
@@ -162,22 +185,26 @@ def export_latents_to_video(
     frames = pipeline.video_processor.postprocess_video(video=video, output_type="pil")
     export_to_video(video_frames=frames[0], output_video_path=video_path, fps=fps)
 
-
+    
 # Modified from CogVideoXImageToVideoPipeline.__call__
 def sample(
     pipeline: CogVideoXImageToVideoPipeline,
     latents: torch.FloatTensor,
-    image_latents: torch.FloatTensor,
-    scheduler: Union[DDIMInverseScheduler, CogVideoXDDIMScheduler],
+    image: torch.FloatTensor,
+    video: torch.FloatTensor,
+    scheduler,
     prompt: Optional[Union[str, List[str]]] = None,
     negative_prompt: Optional[Union[str, List[str]]] = None,
     num_inference_steps: int = 50,
     guidance_scale: float = 6,
+    preservation_scale: float = 3,
     use_dynamic_cfg: bool = False,
     eta: float = 0.0,
     generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
     attention_kwargs: Optional[Dict[str, Any]] = None,
-    reference_latents: torch.FloatTensor = None,
+    strength: float = 0.8,
+    height: Optional[int] = None,
+    width: Optional[int] = None,
 ) -> torch.FloatTensor:
     pipeline._guidance_scale = guidance_scale
     pipeline._attention_kwargs = attention_kwargs
@@ -187,6 +214,17 @@ def sample(
 
     # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
     # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
+    # 2. Default call parameters
+    num_videos_per_prompt = 1
+    num_frames = 49
+
+    if prompt is not None and isinstance(prompt, str):
+        batch_size = 1
+    elif prompt is not None and isinstance(prompt, list):
+        batch_size = len(prompt)
+    else:
+        batch_size = prompt_embeds.shape[0]
+
     # corresponds to doing no classifier free guidance.
     do_classifier_free_guidance = guidance_scale > 1.0
 
@@ -198,21 +236,49 @@ def sample(
         device=device,
     )
     if do_classifier_free_guidance:
-        print("negative prompt is used...")
         prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-    if reference_latents is not None:
-        prompt_embeds = torch.cat([prompt_embeds] * 2, dim=0)
-
+    
     # 4. Prepare timesteps
     timesteps, num_inference_steps = retrieve_timesteps(scheduler, num_inference_steps, device)
+    # added the following 2 lines
+    timesteps, num_inference_steps = pipeline.get_timesteps(num_inference_steps, timesteps, strength, device)
+    latent_timestep = timesteps[:1].repeat(batch_size * num_videos_per_prompt)
     pipeline._num_timesteps = len(timesteps)
 
     # 5. Prepare latents.
-    latents = latents.to(device=device) * scheduler.init_noise_sigma
+    image = pipeline.video_processor.preprocess(image, height=height, width=width).to(
+        device, dtype=prompt_embeds.dtype
+    )
+
+    # TODO: Added the following line ---
+    # Process the video
+    video = pipeline.video_processor.preprocess_video(video, height=height, width=width)
+    video = video.to(device=device, dtype=prompt_embeds.dtype)
+
+    latent_channels = pipeline.transformer.config.in_channels // 2
+    # ------------------------------------------------------------ #
+    latents, image_latents = pipeline.prepare_latents(
+        image,
+        video,
+        batch_size * num_videos_per_prompt,
+        latent_channels,
+        num_frames,
+        height,
+        width,
+        prompt_embeds.dtype,
+        device,
+        generator,
+        latents,
+        latent_timestep,
+        attention_kwargs
+    )
+    # ------------------------------------------------------------ #
 
     # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
     extra_step_kwargs = pipeline.prepare_extra_step_kwargs(generator, eta)
-    if isinstance(scheduler, DDIMInverseScheduler):  # Inverse scheduler does not accept extra kwargs
+    if isinstance(
+        scheduler, DDIMInverseScheduler
+    ):  # Inverse scheduler does not accept extra kwargs
         extra_step_kwargs = {}
 
     # 7. Create rotary embeds if required
@@ -229,23 +295,19 @@ def sample(
 
     # 8. Denoising loop
     num_warmup_steps = max(len(timesteps) - num_inference_steps * scheduler.order, 0)
-
     trajectory = torch.zeros_like(latents).unsqueeze(0).repeat(len(timesteps), 1, 1, 1, 1, 1)
+    
     with pipeline.progress_bar(total=num_inference_steps) as progress_bar:
         for i, t in enumerate(timesteps):
             if pipeline.interrupt:
                 continue
-
+            
+            attention_kwargs['timestep'] = i
             latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-
+           
             latent_image_input = torch.cat([image_latents] * 2) if do_classifier_free_guidance else image_latents
             latent_model_input = torch.cat([latent_model_input, latent_image_input], dim=2)
 
-            if reference_latents is not None:
-                reference = reference_latents[i]
-                reference = torch.cat([reference] * 2) if do_classifier_free_guidance else reference
-                reference = torch.cat([reference, latent_image_input], dim=2)
-                latent_model_input = torch.cat([latent_model_input, reference], dim=0)
             latent_model_input = scheduler.scale_model_input(latent_model_input, t)
 
             # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
@@ -262,31 +324,31 @@ def sample(
             )[0]
             noise_pred = noise_pred.float()
 
-            if reference_latents is not None:  # Recover the original batch size
-                noise_pred, _ = noise_pred.chunk(2)
-
             # perform guidance
+            dynamic_scale = guidance_scale
             if use_dynamic_cfg:
-                pipeline._guidance_scale = 1 + guidance_scale * (
-                    (
-                        1
+                dynamic_scale = guidance_scale + 2 -  (1.0 + guidance_scale * ( # guidance_scale + 2 - (
+                        (
+                            1
                         - math.cos(
                             math.pi
                             * ((num_inference_steps - t.item()) / num_inference_steps) ** 5.0
                         )
                     )
                     / 2
-                )
+                ))
+                
+            # print('dynamic_scale: ', dynamic_scale)
             if do_classifier_free_guidance:
                 noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + pipeline.guidance_scale * (
-                    noise_pred_text - noise_pred_uncond
-                )
+                # noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                # position-wise guidance scale
+                noise_pred = noise_pred_uncond + dynamic_scale * (noise_pred_text - noise_pred_uncond)
 
             # compute the noisy sample x_t-1 -> x_t
             # FIXIT: Problem is here
             latents = scheduler.step(
-                noise_pred, t, latents, **extra_step_kwargs, return_dict=False
+                model_output=noise_pred, timestep=t, sample=latents, **extra_step_kwargs, return_dict=False
             )[0]
             latents = latents.to(prompt_embeds.dtype)
             trajectory[i] = latents
@@ -301,19 +363,16 @@ def sample(
 
     return trajectory
 
-
+# sample noise: torch.Size([1, 13, 16, 60, 90])
 @torch.no_grad()
-def ddim_inversion(
+def inverse_dvs(
     model_path: str,
     prompt: str,
     video_path: str,
     output_path: str,
     guidance_scale: float,
+    preservation_scale: float,
     num_inference_steps: int,
-    skip_frames_start: int,
-    skip_frames_end: int,
-    frame_sample_step: Optional[int],
-    max_num_frames: int,
     width: int,
     height: int,
     fps: int,
@@ -321,78 +380,80 @@ def ddim_inversion(
     seed: int,
     device: torch.device,
     lora_path: str = None,
-    subfolder: str = None,
+    inverted_latent_path: str = None,
+    mask_path: str = None,
+    depth_path: str = None,
+    k_order: int = 3,
+    treshold_idx: int = -5,
 ):
     # set seed
     set_seed(seed)
     os.makedirs(output_path, exist_ok=True)
 
-    video_name = video_path.split('/')[-2]
-    print(f"Processing: {subfolder}_latents_{video_name}_{num_inference_steps}")
-
     # Load the model
     pipeline: CogVideoXImageToVideoPipeline = CogVideoXImageToVideoPipeline.from_pretrained(model_path, torch_dtype=dtype).to(device=device)
+
+    # Load the new transformer model
+    transformer = CogVideoXTransformer3DModel.from_pretrained(model_path, 
+                                                              subfolder="transformer", 
+                                                              torch_dtype=dtype).to(device=device)
+    # Set the transformer to the new model
+    pipeline.transformer = transformer
+
+    # Set the scheduler to the new model
+    pipeline.scheduler = CogVideoXDDIMScheduler.from_config(pipeline.scheduler.config)
+    print("--------------------------------")
+    pipeline.scheduler.config['prediction_type'] = 'sample'
+    print('prediction type: ', pipeline.scheduler.config['prediction_type'])
+    print("--------------------------------")
     
     if not pipeline.transformer.config.use_rotary_positional_embeddings:
         raise NotImplementedError("This script supports CogVideoX 5B model only.")
 
-    print('Not loading LoRA weights: ', lora_path)
     if lora_path != "None":
         print('Loading LoRA weights from: ', lora_path)
         base_url = 'Eyeline-Research/Go-with-the-Flow'
         lora_path = hf_hub_download(repo_id=base_url, filename=lora_path)
         pipeline.load_lora_weights(lora_path)
+
+    # Get video and first frame image
+    video = load_video(video_path)
+    image = video[0]
     
-    print('output_path: ', output_path)
-    image = load_video(video_path)[0]
-    image = pipeline.video_processor.preprocess(image, height=480, width=720).to(device, dtype=torch.bfloat16)
+    inverted_latent = None
+    if inverted_latent_path is not None:
+        inverted_latent = torch.load(inverted_latent_path).to(device=device, dtype=dtype)
+        
+        
+    attention_kwargs = {'layer': 0, 
+                        'timestep': None, 
+                        'k_order': k_order} 
 
-    video_frames = get_video_frames(
-        video_path=video_path,
-        width=width,
-        height=height,
-        skip_frames_start=skip_frames_start,
-        skip_frames_end=skip_frames_end,
-        max_num_frames=49,
-        frame_sample_step=frame_sample_step,
-    ).to(device=device)
-    video_latents = encode_video_frames(vae=pipeline.vae, video_frames=video_frames)
-    
-    _, image_latents = pipeline.prepare_latents(
-        image=image,
-        batch_size=1,
-        num_channels_latents=16,
-        num_frames=49,
-        height=480,
-        width=720,
-        dtype=torch.bfloat16,
-        device=device,
-        generator=torch.Generator(device=device).manual_seed(seed),
-    )
-
-    
-    # TODO: Change here later --------
-    inverse_scheduler = DDIMInverseScheduler(**pipeline.scheduler.config)
-    print("--------------------------------")
-    inverse_scheduler.config['prediction_type'] = 'sample'
-    print('inverse_scheduler: ', inverse_scheduler.config['prediction_type'])
-    print("--------------------------------")
-
-    inverse_latents = sample(
-        pipeline=pipeline,
-        latents=video_latents,
-        image_latents=image_latents,
-        scheduler=inverse_scheduler,
-        prompt="",
-        num_inference_steps=num_inference_steps,
-        guidance_scale=guidance_scale,
-        generator=torch.Generator(device=device).manual_seed(seed),
-    )
-
-    inverse_latents = reversed(inverse_latents)
-    torch.save(inverse_latents, os.path.join(output_path, f"{subfolder}_latents_{video_name}_{num_inference_steps}.pt"))
-    export_latents_to_video(pipeline=pipeline, latents=inverse_latents[0], video_path=os.path.join(output_path, f"{subfolder}_inverse_render_{video_name}_{num_inference_steps}.mp4"), fps=fps)
+    with torch.no_grad():
+        recon_latents = sample(
+                    pipeline=pipeline,
+                    latents=inverted_latent[0],
+                    image=image,
+                    video=video,
+                    strength=0.95,
+                    scheduler=pipeline.scheduler,
+                    prompt=prompt,
+                    negative_prompt='crowded scene, car in the road, bad anatomy, deformed body, occlusions, dark scene, black, unseen regions, black & white, blurry, pixelated.', #"low quality, low resolution, blurry, pixelated, jpeg artifacts, compression artifacts, bad anatomy, deformed body, disproportionate body, distorted limbs, bad proportions, extra limbs, missing limbs, floating limbs, disconnected limbs, mutation, mutated hands and fingers, extra fingers, fused fingers, too many fingers, missing fingers, bad hands, poorly drawn hands, malformed hands, broken hands, duplicate body parts, amputated limbs, disfigured, malformed, mutated, anatomical nonsense, bad composition, cropped image, frame cut, out of frame, poorly framed, over saturation, under saturation, over exposed, under exposed, washed out colors, dull colors, grainy, noisy, watermark, text, signature, logo, username, bad lighting, harsh shadows, unnatural shadows, poor lighting, unnatural lighting, amateur, unprofessional, poorly drawn face, deformed face, ugly, cross-eyed, squinting, grimacing, distorted face, unnatural face, asymmetric face",
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    preservation_scale=preservation_scale,
+                    generator=torch.Generator(device=device).manual_seed(seed),
+                    height=height,
+                    width=width,
+                    use_dynamic_cfg=True, 
+                    attention_kwargs=attention_kwargs,
+                    )
+    # Create output video
+    output_video_name = f'reconstruction_k:{k_order}.mp4'
+    recon_video_path = os.path.join(output_path, output_video_name)
+    export_latents_to_video(pipeline, recon_latents[-1], recon_video_path, fps)
+   
 
 if __name__ == "__main__":
     arguments = get_args()
-    ddim_inversion(**arguments)
+    inverse_dvs(**arguments)

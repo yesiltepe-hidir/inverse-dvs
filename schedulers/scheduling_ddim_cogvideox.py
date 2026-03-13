@@ -536,6 +536,53 @@ class CogVideoXDDIMScheduler(SchedulerMixin, ConfigMixin):
 
         return noisy_samples
 
+    def k_rnr( # non adaptive version of k-rnr
+        self,
+        original_samples: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.IntTensor,
+        order: int = 1,
+        attention_kwargs= None,
+    ) -> torch.Tensor:
+
+        if order == 0:
+            return noise
+        # Make sure alphas_cumprod and timestep have same device and dtype as original_samples
+        # Move the self.alphas_cumprod to device to avoid redundant CPU to GPU data movement
+        # for the subsequent add_noise calls
+        self.alphas_cumprod = self.alphas_cumprod.to(device=original_samples.device)
+        alphas_cumprod = self.alphas_cumprod.to(dtype=original_samples.dtype)
+        timesteps = timesteps.to(original_samples.device)
+
+        sqrt_alpha_prod = alphas_cumprod[timesteps] ** 0.5
+        sqrt_alpha_prod = sqrt_alpha_prod.flatten()
+        while len(sqrt_alpha_prod.shape) < len(original_samples.shape):
+            sqrt_alpha_prod = sqrt_alpha_prod.unsqueeze(-1)
+
+        sqrt_one_minus_alpha_prod = (1 - alphas_cumprod[timesteps]) ** 0.5
+        sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.flatten()
+        while len(sqrt_one_minus_alpha_prod.shape) < len(original_samples.shape):
+            sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.unsqueeze(-1)
+
+        # Our proposal
+        def k_coef(a, b, c):
+            m = torch.zeros_like(a).to(a.device, dtype=a.dtype)
+            for i in range(c):
+                m += a * b ** i
+            n = b ** c
+            return m, n
+            
+        coef_original_samples, coef_noise = k_coef(sqrt_alpha_prod.clone(), sqrt_one_minus_alpha_prod.clone(), order)
+        noisy_samples = coef_original_samples * original_samples + coef_noise * noise
+
+        # Check for NaN values in noisy_samples
+        if torch.isnan(noisy_samples).any():
+            print("Warning: NaN values detected in noisy_samples")
+        else:
+            print("No NaN values detected in noisy_samples")
+
+        return noisy_samples
+
     # Copied from diffusers.schedulers.scheduling_ddpm.DDPMScheduler.get_velocity
     def get_velocity(self, sample: torch.Tensor, noise: torch.Tensor, timesteps: torch.IntTensor) -> torch.Tensor:
         # Make sure alphas_cumprod and timestep have same device and dtype as sample
