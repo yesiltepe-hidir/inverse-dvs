@@ -22,6 +22,8 @@ __pycache__/
 *.webm
 # Exception: allow mp4 files in data folder
 !data/*.mp4
+# Exception: allow mp4 files in output folder
+!output/*.mp4
 
 # PyTorch model files
 *.pt
