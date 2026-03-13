@@ -50,7 +50,6 @@ class DDIMInversionArguments(TypedDict):
     dtype: torch.dtype
     seed: int
     device: torch.device
-    treshold_idx: int
 
 
 def get_args() -> DDIMInversionArguments:
@@ -70,17 +69,6 @@ def get_args() -> DDIMInversionArguments:
     parser.add_argument(
         "--inverted_latent_path", type=str, required=False, help="Path of the inverted latents"
     )
-    
-    parser.add_argument(
-        "--mask_path", type=str, required=False, help="Path of the mask"
-    )
-    parser.add_argument(
-        "--depth_path", type=str, required=False, help="Path of the depth"
-    )
-
-    parser.add_argument(
-        "--treshold_idx", type=int, required=False, default=-5, help="Index to use for the threshold"
-    )
 
     parser.add_argument(
         "--prompt", type=str, required=True, help="Prompt for the direct sample procedure"
@@ -93,9 +81,6 @@ def get_args() -> DDIMInversionArguments:
     )
     parser.add_argument(
         "--guidance_scale", type=float, default=6.0, help="Classifier-free guidance scale"
-    )
-    parser.add_argument(
-        "--preservation_scale", type=float, default=3.0, help="Preservation scale"
     )
     parser.add_argument(
         "--num_inference_steps", type=int, default=50, help="Number of inference steps"
@@ -197,7 +182,6 @@ def sample(
     negative_prompt: Optional[Union[str, List[str]]] = None,
     num_inference_steps: int = 50,
     guidance_scale: float = 6,
-    preservation_scale: float = 3,
     use_dynamic_cfg: bool = False,
     eta: float = 0.0,
     generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
@@ -371,7 +355,6 @@ def inverse_dvs(
     video_path: str,
     output_path: str,
     guidance_scale: float,
-    preservation_scale: float,
     num_inference_steps: int,
     width: int,
     height: int,
@@ -381,10 +364,7 @@ def inverse_dvs(
     device: torch.device,
     lora_path: str = None,
     inverted_latent_path: str = None,
-    mask_path: str = None,
-    depth_path: str = None,
     k_order: int = 3,
-    treshold_idx: int = -5,
 ):
     # set seed
     set_seed(seed)
@@ -441,7 +421,6 @@ def inverse_dvs(
                     negative_prompt='crowded scene, car in the road, bad anatomy, deformed body, occlusions, dark scene, black, unseen regions, black & white, blurry, pixelated.', #"low quality, low resolution, blurry, pixelated, jpeg artifacts, compression artifacts, bad anatomy, deformed body, disproportionate body, distorted limbs, bad proportions, extra limbs, missing limbs, floating limbs, disconnected limbs, mutation, mutated hands and fingers, extra fingers, fused fingers, too many fingers, missing fingers, bad hands, poorly drawn hands, malformed hands, broken hands, duplicate body parts, amputated limbs, disfigured, malformed, mutated, anatomical nonsense, bad composition, cropped image, frame cut, out of frame, poorly framed, over saturation, under saturation, over exposed, under exposed, washed out colors, dull colors, grainy, noisy, watermark, text, signature, logo, username, bad lighting, harsh shadows, unnatural shadows, poor lighting, unnatural lighting, amateur, unprofessional, poorly drawn face, deformed face, ugly, cross-eyed, squinting, grimacing, distorted face, unnatural face, asymmetric face",
                     num_inference_steps=num_inference_steps,
                     guidance_scale=guidance_scale,
-                    preservation_scale=preservation_scale,
                     generator=torch.Generator(device=device).manual_seed(seed),
                     height=height,
                     width=width,
